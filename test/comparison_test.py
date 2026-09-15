@@ -47,7 +47,8 @@ def test_read_streamer_audit_maps_client_names(streamer):
 	streamer_add(database, "b", "updateme", NOW - HOUR)
 	streamer_add(database, "c", "remindme", NOW - 2 * DAY)
 	rows = comparison.read_streamer_audit(path, NOW - DAY, NOW)
-	assert rows == {("a", "remindme"), ("b", "updateme")}
+	assert set(rows.keys()) == {("a", "remindme"), ("b", "updateme")}
+	assert rows[("a", "remindme")] == (NOW - HOUR, "/r/test/comments/t1/_/a/")
 
 
 def test_sets_per_client(store, streamer):
@@ -97,6 +98,42 @@ def test_miss_is_flagged_once_then_resolved(store, streamer):
 	poller_add(store, "late", "remindme", NOW - HOUR)
 	comp.run(NOW + 120)
 	assert store.get_miss("late", "remindme").resolved_utc == NOW + 120
+
+
+def test_miss_records_real_created_utc_and_permalink(store, streamer, monkeypatch):
+	path, database = streamer
+	streamer_add(database, "s_only", "remindme", NOW - HOUR)
+	poller_add(store, "p_only", "updateme", NOW - HOUR)
+	store.set_int_key("comparison_start_utc", NOW - DAY)
+	messages = []
+	monkeypatch.setattr(comparison.log, "info", lambda message: messages.append(message))
+	comparison.Comparison(store, path).run(NOW)
+
+	s_miss = store.get_miss("s_only", "remindme")
+	p_miss = store.get_miss("p_only", "updateme")
+	assert s_miss.created_utc == NOW - HOUR
+	assert p_miss.created_utc == NOW - HOUR
+
+	assert any(message.endswith("https://www.reddit.com/r/test/comments/t1/_/s_only/") for message in messages)
+	assert any(message.endswith("https://www.reddit.com/r/test/comments/t1/_/p_only/") for message in messages)
+
+
+def test_unknown_streamer_client_does_not_crash(store, streamer, monkeypatch):
+	path, database = streamer
+	database.get_or_add_client("other")
+	streamer_add(database, "x", "other", NOW - HOUR)
+	store.set_int_key("comparison_start_utc", NOW - DAY)
+	warnings = []
+	monkeypatch.setattr(comparison.log, "warning", lambda message: warnings.append(message))
+	comp = comparison.Comparison(store, path)
+
+	result = comp.run(NOW)
+	assert result["other"]["streamer_only"] == 1
+	assert result["remindme"] == {"both": 0, "streamer_only": 0, "pushshift_only": 0}
+	assert len(warnings) == 1
+
+	comp.run(NOW + 1)
+	assert len(warnings) == 1
 
 
 def test_warning_threshold_rate_limited(store, streamer, monkeypatch):

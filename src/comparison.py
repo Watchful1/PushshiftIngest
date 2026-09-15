@@ -11,22 +11,22 @@ WINDOW_SECONDS = 24 * 3600
 FLOOR_SECONDS = 15 * 60
 WARN_THRESHOLD = 5
 WARN_INTERVAL_SECONDS = 3600
-SIDES = ("streamer_only", "pushshift_only")
 
 
 def read_streamer_audit(path, start_utc, end_utc):
-	"""Read-only. Returns a set of (comment_id, client_name) from the streamer's audit table."""
+	"""Read-only. Returns {(comment_id, client_name): (created_utc, permalink)} from the streamer's audit table."""
 	uri = f"{Path(path).resolve().as_uri()}?mode=ro"
 	connection = sqlite3.connect(uri, uri=True, timeout=20)
 	try:
 		rows = connection.execute(
-			"SELECT a.id, c.name FROM ingest_audit a JOIN clients c ON c.id = a.client_id "
+			"SELECT a.id, c.name, a.created_utc, a.permalink FROM ingest_audit a "
+			"JOIN clients c ON c.id = a.client_id "
 			"WHERE a.created_utc >= ? AND a.created_utc <= ?",
 			(start_utc, end_utc),
 		).fetchall()
 	finally:
 		connection.close()
-	return {(row[0], row[1]) for row in rows}
+	return {(row[0], row[1]): (row[2], row[3]) for row in rows}
 
 
 class Comparison:
@@ -34,6 +34,7 @@ class Comparison:
 		self.store = store
 		self.streamer_db_path = streamer_db_path
 		self.last_warning_utc = None
+		self.warned_unknown_clients = set()
 
 	def run(self, now_utc):
 		"""Diff both sides inside the window. Returns {client: {both, streamer_only, pushshift_only}}."""
@@ -45,19 +46,22 @@ class Comparison:
 
 		streamer_side = read_streamer_audit(self.streamer_db_path, start_utc, end_utc)
 		seen_rows = self.store.get_seen_between(start_utc, end_utc)
-		pushshift_side = {(row.id, row.client) for row in seen_rows}
-		created_by_key = {(row.id, row.client): row.created_utc for row in seen_rows}
+		pushshift_side = {(row.id, row.client): (row.created_utc, row.permalink) for row in seen_rows}
 
 		result = {client: {"both": 0, "streamer_only": 0, "pushshift_only": 0} for client in CLIENT_NAMES}
-		for key in streamer_side & pushshift_side:
-			result[key[1]]["both"] += 1
+		streamer_keys = set(streamer_side.keys())
+		pushshift_keys = set(pushshift_side.keys())
+		for key in streamer_keys & pushshift_keys:
+			self._counts_for(result, key[1])["both"] += 1
 			self._resolve_if_flagged(key, now_utc)
-		for key in streamer_side - pushshift_side:
-			result[key[1]]["streamer_only"] += 1
-			self._flag(key, "streamer_only", created_by_key.get(key, 0), now_utc)
-		for key in pushshift_side - streamer_side:
-			result[key[1]]["pushshift_only"] += 1
-			self._flag(key, "pushshift_only", created_by_key.get(key, 0), now_utc)
+		for key in streamer_keys - pushshift_keys:
+			self._counts_for(result, key[1])["streamer_only"] += 1
+			created_utc, permalink = streamer_side[key]
+			self._flag(key, "streamer_only", created_utc, permalink, now_utc)
+		for key in pushshift_keys - streamer_keys:
+			self._counts_for(result, key[1])["pushshift_only"] += 1
+			created_utc, permalink = pushshift_side[key]
+			self._flag(key, "pushshift_only", created_utc, permalink, now_utc)
 
 		for client, counts in result.items():
 			for name, value in counts.items():
@@ -66,13 +70,21 @@ class Comparison:
 		self._maybe_warn(now_utc)
 		return result
 
-	def _flag(self, key, side, created_utc, now_utc):
+	def _counts_for(self, result, client):
+		if client not in result:
+			result[client] = {"both": 0, "streamer_only": 0, "pushshift_only": 0}
+			if client not in self.warned_unknown_clients:
+				log.warning(f"Comparison saw unknown client name: {client}")
+				self.warned_unknown_clients.add(client)
+		return result[client]
+
+	def _flag(self, key, side, created_utc, permalink, now_utc):
 		comment_id, client = key
 		if self.store.get_miss(comment_id, client) is not None:
 			return
 		self.store.add_miss(comment_id, client, side, created_utc=created_utc, flagged_utc=now_utc)
 		counters.misses.labels(client=client, side=side).inc()
-		log.info(f"Comparison miss {side} for {client}: https://www.reddit.com/comments/{comment_id}")
+		log.info(f"Comparison miss {side} for {client}: https://www.reddit.com{permalink}")
 
 	def _resolve_if_flagged(self, key, now_utc):
 		miss = self.store.get_miss(*key)
