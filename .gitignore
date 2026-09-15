@@ -1,0 +1,7 @@
+pushshift_token.txt
+*.db
+*.db-journal
+logs/
+__pycache__/
+.pytest_cache/
+.idea/
