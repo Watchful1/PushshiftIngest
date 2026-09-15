@@ -28,6 +28,13 @@ def test_token_store_missing_file(tmp_path):
 	assert store.load() is None
 
 
+def test_token_store_save_is_atomic(token_file):
+	store = pushshift.TokenStore(token_file)
+	store.save("token-two")
+	assert store.load() == "token-two"
+	assert not (token_file.parent / (token_file.name + ".tmp")).exists()
+
+
 def test_search_success(token_file):
 	page = [{"id": "a", "created_utc": 100}]
 	client, session = make_client(token_file, [FakeResponse(200, {"data": page})])
@@ -40,13 +47,13 @@ def test_search_success(token_file):
 	assert params["q"] == pushshift.QUERY
 	assert params["limit"] == 250
 	assert params["order"] == "desc"
-	assert "before" not in params
+	assert "until" not in params
 
 
 def test_search_with_before(token_file):
 	client, session = make_client(token_file, [FakeResponse(200, {"data": []})])
 	client.search(before=12345)
-	assert session.calls[0][2]["before"] == 12345
+	assert session.calls[0][2]["until"] == 12345
 
 
 def test_search_timeout(token_file):
@@ -166,3 +173,15 @@ def test_bearer_header_uses_current_token(token_file):
 	client.search()
 	assert session.headers["Authorization"] == "Bearer token-one"
 	assert "User-Agent" in session.headers
+
+
+def test_refresh_post_headers_have_no_authorization(token_file):
+	class HeaderSession(FakeSession):
+		def post(self, url, params=None, headers=None, timeout=None):
+			self.headers = headers
+			return super().post(url, params, headers, timeout)
+	session = HeaderSession([FakeResponse(200, {"access_token": "token-two"})])
+	client = pushshift.PushshiftClient(pushshift.TokenStore(token_file), session=session)
+	client.refresh_token()
+	assert "User-Agent" in session.headers
+	assert "Authorization" not in session.headers

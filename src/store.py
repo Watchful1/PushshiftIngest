@@ -2,6 +2,8 @@ import discord_logging
 from sqlalchemy import Column, Integer, String, Boolean
 from sqlalchemy.orm import declarative_base
 from praw_wrapper import IngestComment
+# Reaches into praw_wrapper's internal module because the public API has no lookup-only
+# client getter; re-check this import on a PrawWrapper upgrade.
 from praw_wrapper.ingest import Client
 
 log = discord_logging.get_logger()

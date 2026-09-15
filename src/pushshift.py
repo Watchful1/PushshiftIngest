@@ -27,8 +27,10 @@ class TokenStore:
 		return token if token else None
 
 	def save(self, token):
-		with open(self.path, 'w') as handle:
+		tmp_path = self.path + ".tmp"
+		with open(tmp_path, 'w') as handle:
 			handle.write(token)
+		os.replace(tmp_path, self.path)
 
 
 class PushshiftClient:
@@ -55,10 +57,12 @@ class PushshiftClient:
 
 		reason is one of: timeout, error, parse, status_<code>.
 		A 401 or 403 triggers a token refresh before returning.
+		`before` is sent as the `until` query parameter: Pushshift's OpenAPI schema
+		marks `before`/`after` deprecated in favour of `until` (exclusive) / `since` (inclusive).
 		"""
 		params = {"q": QUERY, "limit": limit, "order": "desc"}
 		if before is not None:
-			params["before"] = before
+			params["until"] = before
 		try:
 			response = self.session.get(SEARCH_URL, params=params, headers=self._headers(), timeout=self.timeout)
 		except requests.exceptions.Timeout:
