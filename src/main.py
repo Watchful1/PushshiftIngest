@@ -17,7 +17,7 @@ import praw_wrapper
 import counters
 import matching
 import pushshift
-from comparison import Comparison
+from comparison import Comparison, read_streamer_audit
 from store import Store
 
 CATCH_UP_AFTER_SECONDS = 3600
@@ -152,6 +152,7 @@ def signal_handler(signal, frame):
 
 if __name__ == "__main__":
 	signal.signal(signal.SIGINT, signal_handler)
+	signal.signal(signal.SIGTERM, signal_handler)
 
 	parser = argparse.ArgumentParser(description="Pushshift trigger comment poller for RemindMeBot and UpdateMeBot")
 	parser.add_argument("user", help="The praw.ini section to use for discord logging")
@@ -174,19 +175,29 @@ if __name__ == "__main__":
 		log.error(f"No pushshift token in {args.token_file}")
 		sys.exit(1)
 
-	if args.streamer_db is not None and not os.path.exists(args.streamer_db):
-		log.error(f"Streamer database not found: {args.streamer_db}")
-		sys.exit(1)
+	if args.streamer_db is not None:
+		if not os.path.exists(args.streamer_db):
+			log.error(f"Streamer database not found: {args.streamer_db}")
+			sys.exit(1)
+		try:
+			read_streamer_audit(args.streamer_db, 0, 0)
+		except Exception as err:
+			log.error(f"Streamer database not readable: {args.streamer_db}: {err}")
+			sys.exit(1)
 
 	counters.init(args.port)
 	counters.mode.labels(mode="active").set(1 if args.active else 0)
 	counters.mode.labels(mode="shadow").set(0 if args.active else 1)
 
-	ingest_database = praw_wrapper.IngestDatabase(location=args.db)
-	for client_name, terms in matching.SEARCH_TERMS.items():
-		for term in terms:
-			ingest_database.register_search(search_term=term, client_name=client_name)
-	ingest_database.commit()
+	try:
+		ingest_database = praw_wrapper.IngestDatabase(location=args.db)
+		for client_name, terms in matching.SEARCH_TERMS.items():
+			for term in terms:
+				ingest_database.register_search(search_term=term, client_name=client_name)
+		ingest_database.commit()
+	except Exception as err:
+		log.error(f"Unable to open database: {args.db}: {err}")
+		sys.exit(1)
 	store = Store(ingest_database)
 
 	comparison = Comparison(store, args.streamer_db) if args.streamer_db is not None else None

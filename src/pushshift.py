@@ -2,6 +2,8 @@ import os
 import requests
 import discord_logging
 
+import counters
+
 log = discord_logging.get_logger()
 
 SEARCH_URL = "https://api.pushshift.io/reddit/comment/search"
@@ -94,6 +96,7 @@ class PushshiftClient:
 
 	def refresh_token(self):
 		"""Returns one of: refreshed, still_active, rejected, error. Never logs the token value."""
+		counters.request_results.labels(result="refresh").inc()
 		try:
 			response = self.session.post(
 				REFRESH_URL, params={"access_token": self.token}, headers={'User-Agent': USER_AGENT}, timeout=self.timeout)

@@ -52,6 +52,8 @@ when more than 5 new unresolved misses appear in an hour, at most once an hour.
 
 1. Stop CommentStreamer.
 2. Restart PushshiftIngest with `--active` and without `--streamer_db`.
+   Use the same `--db` file as the shadow run, since the no-replay guarantee
+   comes from the `seen_comments` rows already in it.
 3. Restart RemindMeBot and UpdateMeBot with `--ingest_db` pointing at this
    project's database file.
 

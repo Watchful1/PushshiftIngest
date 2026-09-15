@@ -1,4 +1,5 @@
 import pytest
+import counters
 import pushshift
 from fakes import FakeResponse, FakeSession, timeout_error
 
@@ -173,6 +174,14 @@ def test_bearer_header_uses_current_token(token_file):
 	client.search()
 	assert session.headers["Authorization"] == "Bearer token-one"
 	assert "User-Agent" in session.headers
+
+
+def test_refresh_increments_refresh_counter(token_file):
+	client, _ = make_client(token_file, [FakeResponse(200, {"access_token": "token-two"})])
+	before = counters.request_results.labels(result="refresh")._value.get()
+	client.refresh_token()
+	after = counters.request_results.labels(result="refresh")._value.get()
+	assert after == before + 1
 
 
 def test_refresh_post_headers_have_no_authorization(token_file):
