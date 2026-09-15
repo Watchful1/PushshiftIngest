@@ -2,6 +2,7 @@ import discord_logging
 from sqlalchemy import Column, Integer, String, Boolean
 from sqlalchemy.orm import declarative_base
 from praw_wrapper import IngestComment
+from praw_wrapper.ingest import Client
 
 log = discord_logging.get_logger()
 
@@ -96,7 +97,9 @@ class Store:
 			.all()
 
 	def count_pending(self, client_name):
-		client = self.db.get_or_add_client(client_name)
+		client = self.session.query(Client).filter_by(name=client_name).first()
+		if client is None:
+			return 0
 		return self.db.get_count_comments(client)
 
 	# comparison misses

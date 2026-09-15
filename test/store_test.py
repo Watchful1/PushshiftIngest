@@ -1,4 +1,5 @@
 from store import SeenComment, ComparisonMiss
+from praw_wrapper.ingest import Client
 
 
 def make_comment(comment_id="abc123", created_utc=1000, author="Watchful1", retrieved_utc=1010):
@@ -100,3 +101,8 @@ def test_int_keystore(store):
 	store.set_int_key("last_success_utc", 12345)
 	store.commit()
 	assert store.get_int_key("last_success_utc") == 12345
+
+
+def test_count_pending_unknown_client_does_not_create_it(store, ingest_db):
+	assert store.count_pending("nope") == 0
+	assert ingest_db.session.query(Client).filter_by(name="nope").first() is None
