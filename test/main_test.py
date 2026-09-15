@@ -83,7 +83,7 @@ def test_run_cycle_warns_once_after_threshold(store, tmp_path, monkeypatch):
 	assert state.warned is False
 
 
-def test_catch_up_pages_until_last_success(store, tmp_path):
+def test_catch_up_pages_until_last_success(store, tmp_path, monkeypatch):
 	last_success = NOW - 2 * HOUR
 	client = make_client(tmp_path, [
 		FakeResponse(200, {"data": [comment("p1a", NOW - 60), comment("p1b", NOW - HOUR)]}),
@@ -92,10 +92,13 @@ def test_catch_up_pages_until_last_success(store, tmp_path):
 	])
 	store.set_int_key("last_success_utc", last_success)
 	store.commit()
+	warnings = []
+	monkeypatch.setattr(main.log, "warning", lambda message: warnings.append(message))
 	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
 	assert store.count_seen() == 4
 	assert len(client.session.calls) == 2
 	assert client.session.calls[1][2]["until"] == NOW - HOUR
+	assert warnings == []
 
 
 def test_catch_up_stops_on_empty_page(store, tmp_path):
@@ -109,13 +112,17 @@ def test_catch_up_stops_on_empty_page(store, tmp_path):
 	assert len(client.session.calls) == 2
 
 
-def test_catch_up_stops_at_page_cap(store, tmp_path):
+def test_catch_up_stops_at_page_cap(store, tmp_path, monkeypatch):
 	pages = [FakeResponse(200, {"data": [comment(f"c{i}", NOW - 10 * (i + 1))]}) for i in range(20)]
 	client = make_client(tmp_path, pages)
 	store.set_int_key("last_success_utc", NOW - 2 * HOUR)
 	store.commit()
+	warnings = []
+	monkeypatch.setattr(main.log, "warning", lambda message: warnings.append(message))
 	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
 	assert len(client.session.calls) == main.MAX_CATCH_UP_PAGES
+	assert len(warnings) == 1
+	assert "page cap" in warnings[0]
 
 
 def test_no_catch_up_inside_one_hour(store, tmp_path):
@@ -145,3 +152,21 @@ def test_prune_runs_hourly(store, tmp_path, monkeypatch):
 	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW + 60)
 	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW + HOUR + 1)
 	assert calls == [NOW, NOW + HOUR + 1]
+
+
+class RaisingStore:
+	def commit(self):
+		raise RuntimeError("commit failed")
+
+
+class RaisingIngestDatabase:
+	def close(self):
+		raise RuntimeError("close failed")
+
+
+def test_signal_handler_always_exits_zero(monkeypatch):
+	monkeypatch.setattr(main, "store", RaisingStore())
+	monkeypatch.setattr(main, "ingest_database", RaisingIngestDatabase())
+	with pytest.raises(SystemExit) as excinfo:
+		main.signal_handler(None, None)
+	assert excinfo.value.code == 0

@@ -78,6 +78,10 @@ def catch_up(client, store, active, now_utc, last_success_utc, before):
 		log.info(f"Catch up page {pages}: {len(comments)} comments, {new_count} new, oldest {oldest}")
 		before = oldest
 
+	if pages >= MAX_CATCH_UP_PAGES and before is not None and before > target:
+		counters.catch_up_truncated.inc()
+		log.warning(f"Catch up hit the {MAX_CATCH_UP_PAGES} page cap with {before - target} seconds still uncovered")
+
 
 def run_cycle(client, store, comparison, active, state, now_utc):
 	last_success_utc = store.get_int_key("last_success_utc")
@@ -134,18 +138,21 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 
 def signal_handler(signal, frame):
 	log.info("Handling interrupt")
-	if store is not None:
-		store.commit()
-	if ingest_database is not None:
-		ingest_database.close()
-	discord_logging.flush_discord()
-	sys.exit(0)
-
-
-signal.signal(signal.SIGINT, signal_handler)
+	try:
+		if store is not None:
+			store.commit()
+		if ingest_database is not None:
+			ingest_database.close()
+	except Exception as err:
+		log.warning(f"Error while handling interrupt: {err}")
+	finally:
+		discord_logging.flush_discord()
+		sys.exit(0)
 
 
 if __name__ == "__main__":
+	signal.signal(signal.SIGINT, signal_handler)
+
 	parser = argparse.ArgumentParser(description="Pushshift trigger comment poller for RemindMeBot and UpdateMeBot")
 	parser.add_argument("user", help="The praw.ini section to use for discord logging")
 	parser.add_argument("--db", help="Path to this poller's ingest database", default="database.db")

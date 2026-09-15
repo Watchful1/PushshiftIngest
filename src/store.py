@@ -76,6 +76,9 @@ class Store:
 		return row
 
 	def queue(self, row):
+		# get_or_add_client commits the session if it creates a client, so every client in
+		# matching.SEARCH_TERMS must already be registered at startup (main.py does this) to
+		# keep a page's writes atomic.
 		client = self.db.get_or_add_client(row.client)
 		self.db.add_comment(IngestComment(
 			id=row.id,

@@ -24,8 +24,9 @@ Active mode: also writes `ingest_comments` rows for the bots.
 
     pipenv run python src/main.py Watchful1 --active
 
-Flags: `--db` (default `database.db`), `--streamer_db`, `--token_file`,
-`--interval` (default 30), `--port` (default 8006), `--debug`, `--once`.
+Flags: `--db` (default `database.db`), `--streamer_db`, `--token_file`
+(default `pushshift_token.txt`), `--interval` (default 30), `--port`
+(default 8006), `--debug`, `--once`.
 
 ## The audit trigger in the streamer database
 
