@@ -12,7 +12,8 @@ Design: `docs/superpowers/specs/2026-09-14-pushshift-ingest-design.md`.
     echo "<bearer token>" > pushshift_token.txt
 
 The token file is gitignored. The poller refreshes the token itself on a
-401 or 403 and writes the new one back to the file.
+401 or 403 and writes the new one back to the file. The token file must
+contain just the raw token on one line.
 
 ## Running
 
@@ -57,7 +58,12 @@ when more than 5 new unresolved misses appear in an hour, at most once an hour.
 3. Restart RemindMeBot and UpdateMeBot with `--ingest_db` pointing at this
    project's database file.
 
-Nothing seen before activation is queued, so the bots do not replay history.
+The poller records the activation time on its first active cycle and only
+queues comments created after that time minus one minute, so comments the
+streamer already delivered are not delivered again. Comments created inside
+that one minute can be delivered twice: UpdateMeBot then sends a second
+confirmation message, and RemindMeBot creates a second reminder and
+confirmation.
 
 ## Tests
 

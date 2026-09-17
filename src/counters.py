@@ -10,6 +10,7 @@ comparison = prometheus_client.Gauge('pushshift_comparison', "Comparison window 
 misses = prometheus_client.Counter('pushshift_misses_total', "Comparison misses flagged", ['client', 'side'])
 ingest_pending = prometheus_client.Gauge('pushshift_ingest_pending', "Rows waiting in ingest_comments", ['client'])
 catch_up_truncated = prometheus_client.Counter('pushshift_catch_up_truncated_total', "Catch up runs that hit the page cap before reaching the last success time")
+malformed_comments = prometheus_client.Counter('pushshift_malformed_comments_total', "Pushshift comments skipped because a required field was missing")
 
 
 def init(port):

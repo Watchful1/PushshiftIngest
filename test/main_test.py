@@ -1,4 +1,5 @@
 import pytest
+import counters
 import main
 import pushshift
 from fakes import FakeResponse, FakeSession
@@ -48,6 +49,40 @@ def test_process_page_empty(store):
 	assert main.process_page([], store, active=False, now_utc=NOW) == (0, None)
 
 
+def test_process_page_skips_comment_missing_required_field(store, monkeypatch):
+	bad = comment("a", NOW - 60)
+	del bad["body"]
+	page = [comment("b", NOW - 120), bad]
+	warnings = []
+	monkeypatch.setattr(main.log, "warning", lambda message: warnings.append(message))
+	before = counters.malformed_comments._value.get()
+	new_count, _ = main.process_page(page, store, active=False, now_utc=NOW)
+	after = counters.malformed_comments._value.get()
+	assert new_count == 1
+	assert store.count_seen() == 1
+	assert len(warnings) == 1
+	assert "body" in warnings[0]
+	assert after - before == 1
+
+
+def test_process_page_builds_permalink_when_missing(store):
+	bare = comment("a", NOW - 60)
+	del bare["permalink"]
+	main.process_page([bare], store, active=False, now_utc=NOW)
+	rows = store.get_seen_between(NOW - 3600, NOW)
+	assert len(rows) == 1
+	assert rows[0].permalink == "/r/test/comments/t1/_/a/"
+
+
+def test_process_page_rejects_bad_created_utc(store):
+	bad = comment("a", NOW - 60)
+	bad["created_utc"] = "nope"
+	new_count, oldest = main.process_page([bad], store, active=False, now_utc=NOW)
+	assert new_count == 0
+	assert oldest is None
+	assert store.count_seen() == 0
+
+
 def test_run_cycle_success(store, tmp_path):
 	client = make_client(tmp_path, [FakeResponse(200, {"data": [comment("a", NOW - 60)]})])
 	state = main.LoopState()
@@ -94,11 +129,21 @@ def test_catch_up_pages_until_last_success(store, tmp_path, monkeypatch):
 	store.commit()
 	warnings = []
 	monkeypatch.setattr(main.log, "warning", lambda message: warnings.append(message))
+	commit_count = 0
+	original_commit = store.commit
+
+	def counting_commit():
+		nonlocal commit_count
+		commit_count += 1
+		original_commit()
+
+	monkeypatch.setattr(store, "commit", counting_commit)
 	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
 	assert store.count_seen() == 4
 	assert len(client.session.calls) == 2
 	assert client.session.calls[1][2]["until"] == NOW - HOUR
 	assert warnings == []
+	assert commit_count >= 2
 
 
 def test_catch_up_stops_on_empty_page(store, tmp_path):
@@ -141,6 +186,26 @@ def test_end_to_end_active_row_visible_to_bot(store, ingest_db, tmp_path):
 	assert len(rows) == 1
 	assert rows[0].id == "a"
 	assert rows[0].body == "RemindMe! 1 day"
+
+
+def test_active_sets_activated_utc_once(store, tmp_path):
+	client = make_client(tmp_path, [
+		FakeResponse(200, {"data": [comment("a", NOW - 60)]}),
+		FakeResponse(200, {"data": [comment("b", NOW - 30)]}),
+	])
+	state = main.LoopState()
+	main.run_cycle(client, store, comparison=None, active=True, state=state, now_utc=NOW)
+	main.run_cycle(client, store, comparison=None, active=True, state=state, now_utc=NOW + 100)
+	assert store.get_int_key("activated_utc") == NOW
+
+
+def test_active_does_not_queue_comments_created_before_activation(store, tmp_path):
+	client = make_client(tmp_path, [
+		FakeResponse(200, {"data": [comment("old", NOW - 3600), comment("new", NOW - 30)]}),
+	])
+	main.run_cycle(client, store, comparison=None, active=True, state=main.LoopState(), now_utc=NOW)
+	assert store.count_seen() == 2
+	assert store.count_pending("remindme") == 1
 
 
 def test_prune_runs_hourly(store, tmp_path, monkeypatch):

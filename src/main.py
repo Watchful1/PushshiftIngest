@@ -25,6 +25,9 @@ CATCH_UP_MARGIN_SECONDS = 15 * 60
 MAX_CATCH_UP_PAGES = 10
 PRUNE_INTERVAL_SECONDS = 3600
 FAILURE_WARN_THRESHOLD = 5
+ACTIVATION_MARGIN_SECONDS = 60
+
+REQUIRED_COMMENT_FIELDS = ("id", "subreddit", "created_utc", "link_id", "body")
 
 store = None
 ingest_database = None
@@ -37,12 +40,39 @@ class LoopState:
 		self.last_prune_utc = None
 
 
-def process_page(comments, store, active, now_utc):
+def normalise_comment(comment):
+	"""Return a cleaned copy of comment, or None if a required field is missing or invalid."""
+	missing = [field for field in REQUIRED_COMMENT_FIELDS if comment.get(field) is None]
+	if missing:
+		log.warning(f"Skipping malformed comment: missing {sorted(missing)} : {comment.get('id')}")
+		return None
+
+	cleaned = dict(comment)
+	try:
+		cleaned["created_utc"] = int(cleaned["created_utc"])
+	except (TypeError, ValueError):
+		log.warning(f"Skipping malformed comment: invalid created_utc : {comment.get('id')}")
+		return None
+
+	if not cleaned.get("permalink"):
+		thread_id = cleaned["link_id"]
+		if thread_id.startswith("t3_"):
+			thread_id = thread_id[len("t3_"):]
+		cleaned["permalink"] = f"/r/{cleaned['subreddit']}/comments/{thread_id}/_/{cleaned['id']}/"
+
+	return cleaned
+
+
+def process_page(comments, store, active, now_utc, queue_after_utc=None):
 	"""Upsert every matching comment. Returns (new_row_count, oldest_created_utc)."""
 	new_count = 0
 	oldest = None
-	for comment in comments:
-		created_utc = int(comment["created_utc"])
+	for raw_comment in comments:
+		comment = normalise_comment(raw_comment)
+		if comment is None:
+			counters.malformed_comments.inc()
+			continue
+		created_utc = comment["created_utc"]
 		if oldest is None or created_utc < oldest:
 			oldest = created_utc
 		if not matching.is_valid_author(comment.get("author")):
@@ -53,14 +83,14 @@ def process_page(comments, store, active, now_utc):
 				continue
 			new_count += 1
 			counters.seen.labels(client=client).inc()
-			if active:
+			if active and (queue_after_utc is None or row.created_utc >= queue_after_utc):
 				store.queue(row)
 				counters.queued.labels(client=client).inc()
 				log.info(f"Queued {client} comment {row.id} from u/{row.author} in r/{row.subreddit}")
 	return new_count, oldest
 
 
-def catch_up(client, store, active, now_utc, last_success_utc, before):
+def catch_up(client, store, active, now_utc, last_success_utc, before, queue_after_utc=None):
 	"""Page backward until we pass last_success_utc minus a margin, an empty page, or the page cap."""
 	target = last_success_utc - CATCH_UP_MARGIN_SECONDS
 	pages = 1  # the first page was already fetched by run_cycle
@@ -74,7 +104,8 @@ def catch_up(client, store, active, now_utc, last_success_utc, before):
 		counters.request_results.labels(result="success").inc()
 		if not comments:
 			return
-		new_count, oldest = process_page(comments, store, active, now_utc)
+		new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc)
+		store.commit()
 		log.info(f"Catch up page {pages}: {len(comments)} comments, {new_count} new, oldest {oldest}")
 		before = oldest
 
@@ -90,6 +121,14 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 	if last_success_utc is None:
 		store.set_int_key("last_success_utc", now_utc)
 		last_success_utc = now_utc
+
+	queue_after_utc = None
+	if active:
+		activated_utc = store.get_int_key("activated_utc")
+		if activated_utc is None:
+			store.set_int_key("activated_utc", now_utc)
+			activated_utc = now_utc
+		queue_after_utc = activated_utc - ACTIVATION_MARGIN_SECONDS
 
 	comments, reason = client.search()
 	counters.consecutive_failures.set(client.consecutive_failures)
@@ -111,15 +150,21 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 		state.first_failure_utc = None
 		state.warned = False
 
-	new_count, oldest = process_page(comments, store, active, now_utc)
+	new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc)
 	if comments:
-		newest = max(int(comment["created_utc"]) for comment in comments)
-		counters.lag.set(max(now_utc - newest, 0))
+		valid_created_utcs = []
+		for comment in comments:
+			try:
+				valid_created_utcs.append(int(comment["created_utc"]))
+			except (KeyError, TypeError, ValueError):
+				continue
+		if valid_created_utcs:
+			counters.lag.set(max(now_utc - max(valid_created_utcs), 0))
 	log.debug(f"Page: {len(comments)} comments, {new_count} new")
 
 	if now_utc - last_success_utc > CATCH_UP_AFTER_SECONDS and comments:
 		log.info(f"Last success was {now_utc - last_success_utc} seconds ago, catching up")
-		catch_up(client, store, active, now_utc, last_success_utc, oldest)
+		catch_up(client, store, active, now_utc, last_success_utc, oldest, queue_after_utc)
 
 	store.set_int_key("last_success_utc", now_utc)
 

@@ -117,8 +117,10 @@ Every cycle, default 30 seconds:
    at the first seen comment.
 3. If `--active`, and the row was newly inserted this cycle, also insert an
    `IngestComment` into `ingest_comments` for that client and mark the row
-   `queued`. Rows that existed before activation are never queued, so the bots
-   do not replay history at cutover.
+   `queued`. An activation gate suppresses queueing for comments created
+   before activation: on the first active cycle the poller records
+   `activated_utc`, and only rows with `created_utc >= activated_utc - 60`
+   are queued, so the bots do not replay history at cutover.
 4. Run the comparison (section below).
 5. Prune `seen_comments` older than 7 days and `comparison_misses` older than
    30 days. Runs once an hour.
@@ -293,10 +295,12 @@ Before the deadline, in order:
 3. Restart RemindMeBot and UpdateMeBot with `--ingest_db` pointing at the
    PushshiftIngest database file.
 
-The gap is seconds. Comments that Pushshift surfaces after activation but
-that were created before it are queued a second time. That window is
-Pushshift's lag, and the bots' existing thread level dedupe turns those into
-message replies rather than duplicate comments, so it is accepted.
+The poller records the activation time on its first active cycle and only
+queues comments created after that time minus one minute, so comments the
+streamer already delivered are not delivered again. Comments created inside
+that one minute can be delivered twice: RemindMeBot creates a duplicate
+reminder for a redelivered comment, and UpdateMeBot sends a duplicate
+confirmation message.
 
 ## Testing
 
