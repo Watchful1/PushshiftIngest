@@ -170,9 +170,9 @@ def test_catch_up_stops_at_page_cap(store, tmp_path, monkeypatch):
 	assert "page cap" in warnings[0]
 
 
-def test_no_catch_up_inside_one_hour(store, tmp_path):
+def test_no_catch_up_inside_threshold(store, tmp_path):
 	client = make_client(tmp_path, [FakeResponse(200, {"data": [comment("a", NOW - 60)]})])
-	store.set_int_key("last_success_utc", NOW - 30 * 60)
+	store.set_int_key("last_success_utc", NOW - 20 * 60)
 	store.commit()
 	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
 	assert len(client.session.calls) == 1

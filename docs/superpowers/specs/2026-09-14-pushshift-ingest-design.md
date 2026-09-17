@@ -109,8 +109,11 @@ bandwidth and an under broad query is caught by the comparison.
 Every cycle, default 30 seconds:
 
 1. Request one page from `https://api.pushshift.io/reddit/comment/search` with
-   `q`, `limit=250`, `order=desc`, no `before` or `after`. Trigger traffic is
-   roughly one comment every couple of minutes, so one page covers hours.
+   `q`, `limit=250`, `order=desc`, no `before` or `after`. Measured on
+   2026-09-17: matching comments arrive about every 14 seconds because
+   `remind me` is common prose, so one page covers roughly one hour. The bots
+   discard the prose hits with their own stricter checks, as they did with
+   CommentStreamer.
 2. For every returned comment, run `match_clients`. For each match, upsert into
    `seen_comments` keyed on `(id, client)`. Existing rows are left alone, so
    late and out of order arrivals are handled by the table, never by stopping
@@ -129,7 +132,7 @@ Every cycle, default 30 seconds:
 ### Catch up after an outage
 
 `last_success_utc` is stored in the poller's key value table. When a request
-succeeds and `now - last_success_utc` exceeds 60 minutes, the poller pages
+succeeds and `now - last_success_utc` exceeds 30 minutes, the poller pages
 backward: it repeats the request with `before=<oldest created_utc on the
 previous page>` until the oldest comment on a page is older than
 `last_success_utc - 15 min`, a page comes back empty, or 10 pages have been

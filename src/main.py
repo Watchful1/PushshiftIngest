@@ -20,7 +20,7 @@ import pushshift
 from comparison import Comparison, read_streamer_audit
 from store import Store
 
-CATCH_UP_AFTER_SECONDS = 3600
+CATCH_UP_AFTER_SECONDS = 1800  # one page covers roughly an hour of matches, so catch up well inside that
 CATCH_UP_MARGIN_SECONDS = 15 * 60
 MAX_CATCH_UP_PAGES = 10
 PRUNE_INTERVAL_SECONDS = 3600
