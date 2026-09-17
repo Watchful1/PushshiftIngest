@@ -164,7 +164,7 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 
 	if now_utc - last_success_utc > CATCH_UP_AFTER_SECONDS and comments:
 		log.info(f"Last success was {now_utc - last_success_utc} seconds ago, catching up")
-t	store.commit()  # release the write lock before the first catch up request
+		store.commit()  # release the write lock before the first catch up request
 		catch_up(client, store, active, now_utc, last_success_utc, oldest, queue_after_utc)
 
 	store.set_int_key("last_success_utc", now_utc)
