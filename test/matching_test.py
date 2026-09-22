@@ -36,3 +36,38 @@ def test_valid_author():
 	assert matching.is_valid_author("Watchful1")
 	assert not matching.is_valid_author(None)
 	assert not matching.is_valid_author("[deleted]")
+
+
+def test_classify_remindme_command():
+	assert matching.classify("remindme", "RemindMe! 1 day") == ("remindme", "command")
+	assert matching.classify("remindme", "!RemindMe 1 day") == ("remindme", "command")
+
+
+def test_classify_remindmerepeat_command():
+	assert matching.classify("remindme", "RemindMeRepeat! 1 week") == ("remindmerepeat", "command")
+
+
+def test_classify_cakeday():
+	assert matching.classify("remindme", "Cakeday!") == ("cakeday", "command")
+	assert matching.classify("remindme", "happy cakeday to you") == ("cakeday", "prose")
+
+
+def test_classify_remind_me_with_space():
+	assert matching.classify("remindme", "Remind me! 5 months") == ("remind me", "command")
+	assert matching.classify("remindme", "they remind me of home") == ("remind me", "prose")
+	assert matching.classify("remindme", "blah\nremind me! 2 days") == ("remind me", "command")
+
+
+def test_classify_bare_mention_vs_command():
+	assert matching.classify("remindme", "u/RemindMeBot 2 days") == ("remindme", "mention")
+	assert matching.classify("remindme", "hey u/remindmebot remindme! 2 days") == ("remindme", "command")
+
+
+def test_classify_updateme_command_precedence():
+	assert matching.classify("updateme", "UpdateMe!") == ("updateme", "command")
+	assert matching.classify("updateme", "subscribeme and updateme") == ("subscribeme", "command")
+	assert matching.classify("updateme", "SubscribeAll!") == ("subscribeall", "command")
+
+
+def test_classify_no_term_is_unknown_prose():
+	assert matching.classify("remindme", "just a normal comment") == ("unknown", "prose")

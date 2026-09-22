@@ -1,4 +1,4 @@
-from store import SeenComment, ComparisonMiss
+from store import SeenComment, ComparisonMiss, Store
 from praw_wrapper.ingest import Client
 
 
@@ -68,8 +68,8 @@ def test_prune_removes_only_old_rows(store):
 	now = 10 * week
 	store.upsert_seen(make_comment("old", created_utc=now - week - 1), "remindme", "remindme", now_utc=now)
 	store.upsert_seen(make_comment("new", created_utc=now - week + 1), "remindme", "remindme", now_utc=now)
-	store.add_miss("m_old", "remindme", "streamer_only", created_utc=1, flagged_utc=now - 31 * 24 * 3600)
-	store.add_miss("m_new", "remindme", "streamer_only", created_utc=1, flagged_utc=now - 29 * 24 * 3600)
+	store.add_miss("m_old", "remindme", "streamer_only", created_utc=1, flagged_utc=now - 31 * 24 * 3600, kind="prose", term="remind me")
+	store.add_miss("m_new", "remindme", "streamer_only", created_utc=1, flagged_utc=now - 29 * 24 * 3600, kind="prose", term="remind me")
 	store.prune(now_utc=now)
 	store.commit()
 	assert [row.id for row in store.get_seen_between(0, now)] == ["new"]
@@ -86,14 +86,43 @@ def test_get_seen_between_is_inclusive(store):
 
 def test_misses(store):
 	assert store.get_miss("x", "remindme") is None
-	miss = store.add_miss("x", "remindme", "pushshift_only", created_utc=50, flagged_utc=100)
+	miss = store.add_miss("x", "remindme", "pushshift_only", created_utc=50, flagged_utc=100, kind="command", term="remindme")
 	assert miss.resolved_utc is None
+	assert miss.kind == "command"
+	assert miss.term == "remindme"
 	store.resolve_miss(miss, resolved_utc=150)
 	assert store.get_miss("x", "remindme").resolved_utc == 150
 	assert store.count_unresolved_misses_since(flagged_after=0) == 0
-	store.add_miss("y", "updateme", "streamer_only", created_utc=50, flagged_utc=120)
+	store.add_miss("y", "updateme", "streamer_only", created_utc=50, flagged_utc=120, kind="prose", term="updateme")
 	assert store.count_unresolved_misses_since(flagged_after=110) == 1
 	assert store.count_unresolved_misses_since(flagged_after=121) == 0
+
+
+def test_count_unresolved_misses_since_filters_by_kind(store):
+	store.add_miss("cmd1", "remindme", "streamer_only", created_utc=1, flagged_utc=100, kind="command", term="remindme")
+	store.add_miss("prose1", "remindme", "streamer_only", created_utc=1, flagged_utc=100, kind="prose", term="remind me")
+	assert store.count_unresolved_misses_since(0) == 2
+	assert store.count_unresolved_misses_since(0, kind="command") == 1
+	assert store.count_unresolved_misses_since(0, kind="prose") == 1
+
+
+def test_migration_adds_kind_and_term_columns(tmp_path):
+	import praw_wrapper
+
+	db_path = tmp_path / "x.db"
+	ingest_database = praw_wrapper.IngestDatabase(location=str(db_path))
+	with ingest_database.engine.begin() as connection:
+		connection.exec_driver_sql(
+			"CREATE TABLE comparison_misses ("
+			"id VARCHAR(12) NOT NULL, client VARCHAR(20) NOT NULL, side VARCHAR(20) NOT NULL, "
+			"created_utc INTEGER NOT NULL, flagged_utc INTEGER NOT NULL, resolved_utc INTEGER, "
+			"PRIMARY KEY (id, client))"
+		)
+	migrated_store = Store(ingest_database)
+	migrated_store.add_miss("m1", "remindme", "streamer_only", created_utc=1, flagged_utc=100, kind="command", term="remindme")
+	migrated_store.commit()
+	assert migrated_store.get_miss("m1", "remindme").kind == "command"
+	assert migrated_store.get_miss("m1", "remindme").term == "remindme"
 
 
 def test_int_keystore(store):

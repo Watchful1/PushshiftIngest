@@ -40,6 +40,8 @@ class ComparisonMiss(Base):
 	created_utc = Column(Integer, nullable=False)
 	flagged_utc = Column(Integer, nullable=False, index=True)
 	resolved_utc = Column(Integer, nullable=True)
+	kind = Column(String(10), nullable=False, default="prose")
+	term = Column(String(40), nullable=False, default="unknown")
 
 
 class Store:
@@ -47,6 +49,16 @@ class Store:
 		self.db = ingest_database
 		self.session = ingest_database.session
 		Base.metadata.create_all(ingest_database.engine)
+		self._ensure_columns()
+
+	def _ensure_columns(self):
+		"""create_all never alters existing tables; add columns introduced after first deploy."""
+		with self.db.engine.begin() as connection:
+			existing = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(comparison_misses)")}
+			if "kind" not in existing:
+				connection.exec_driver_sql("ALTER TABLE comparison_misses ADD COLUMN kind VARCHAR(10) NOT NULL DEFAULT 'prose'")
+			if "term" not in existing:
+				connection.exec_driver_sql("ALTER TABLE comparison_misses ADD COLUMN term VARCHAR(40) NOT NULL DEFAULT 'unknown'")
 
 	def commit(self):
 		self.session.commit()
@@ -112,9 +124,10 @@ class Store:
 	def get_miss(self, comment_id, client):
 		return self.session.get(ComparisonMiss, {"id": comment_id, "client": client})
 
-	def add_miss(self, comment_id, client, side, created_utc, flagged_utc):
+	def add_miss(self, comment_id, client, side, created_utc, flagged_utc, kind, term):
 		miss = ComparisonMiss(
-			id=comment_id, client=client, side=side, created_utc=created_utc, flagged_utc=flagged_utc
+			id=comment_id, client=client, side=side, created_utc=created_utc, flagged_utc=flagged_utc,
+			kind=kind, term=term,
 		)
 		self.session.add(miss)
 		return miss
@@ -122,11 +135,13 @@ class Store:
 	def resolve_miss(self, miss, resolved_utc):
 		miss.resolved_utc = resolved_utc
 
-	def count_unresolved_misses_since(self, flagged_after):
-		return self.session.query(ComparisonMiss) \
+	def count_unresolved_misses_since(self, flagged_after, kind=None):
+		query = self.session.query(ComparisonMiss) \
 			.filter(ComparisonMiss.flagged_utc > flagged_after) \
-			.filter(ComparisonMiss.resolved_utc.is_(None)) \
-			.count()
+			.filter(ComparisonMiss.resolved_utc.is_(None))
+		if kind is not None:
+			query = query.filter(ComparisonMiss.kind == kind)
+		return query.count()
 
 	# retention
 

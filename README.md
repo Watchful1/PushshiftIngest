@@ -67,6 +67,10 @@ created between 24 hours and 15 minutes ago. Results go to the
 `pushshift_comparison` gauge and `pushshift_misses_total` counter, and every
 miss is stored in `comparison_misses` with its side. A Discord warning fires
 when more than 5 new unresolved misses appear in an hour, at most once an hour.
+Every miss also carries `term` and `kind` labels: `kind` is `command` when the
+bot's own trigger rules would act on the comment, `mention` for a bare
+u/RemindMeBot mention, and `prose` otherwise. Only command misses count toward
+the Discord warning.
 
 ## Cutover
 

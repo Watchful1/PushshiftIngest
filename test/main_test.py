@@ -293,7 +293,7 @@ def test_created_series_disabled_in_production_import_order():
 	# early, which would hide a wrong import order in main.py, so this cannot run in-process.
 	code = (
 		"import sys; sys.path.insert(0, 'src'); import main; import counters; "
-		"from prometheus_client import generate_latest; counters.seen.labels(client='remindme').inc(); "
+		"from prometheus_client import generate_latest; counters.seen.labels(client='remindme', term='remindme', kind='command').inc(); "
 		"sys.exit(1 if b'_created' in generate_latest() else 0)"
 	)
 	result = subprocess.run([sys.executable, "-c", code], cwd=os.getcwd(), capture_output=True, text=True)

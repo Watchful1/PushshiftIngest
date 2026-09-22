@@ -93,7 +93,8 @@ def process_page(comments, store, active, now_utc, queue_after_utc=None, tally=N
 			if row is None:
 				continue
 			new_count += 1
-			counters.seen.labels(client=client).inc()
+			term, kind = matching.classify(client, comment["body"])
+			counters.seen.labels(client=client, term=term, kind=kind).inc()
 			if tally is not None:
 				tally[client] = tally.get(client, 0) + 1
 			if active and (queue_after_utc is None or row.created_utc >= queue_after_utc):

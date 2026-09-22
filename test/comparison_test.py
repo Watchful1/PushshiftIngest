@@ -4,6 +4,7 @@ import pytest
 sys.path.append("scripts")
 
 import comparison
+import counters
 import install_audit_trigger
 from praw_wrapper import IngestDatabase, IngestComment
 
@@ -22,21 +23,21 @@ def streamer(tmp_path):
 	return path, database
 
 
-def streamer_add(database, comment_id, client_name, created_utc):
+def streamer_add(database, comment_id, client_name, created_utc, body="RemindMe! 1 day"):
 	client = database.get_or_add_client(client_name)
 	database.add_comment(IngestComment(
 		id=comment_id, author="Watchful1", subreddit="test", created_utc=created_utc,
-		permalink=f"/r/test/comments/t1/_/{comment_id}/", link_id="t3_t1", body="RemindMe! 1 day",
+		permalink=f"/r/test/comments/t1/_/{comment_id}/", link_id="t3_t1", body=body,
 		client_id=client.id,
 	))
 	database.commit()
 
 
-def poller_add(store, comment_id, client_name, created_utc):
+def poller_add(store, comment_id, client_name, created_utc, body="RemindMe! 1 day"):
 	store.upsert_seen({
 		"id": comment_id, "author": "Watchful1", "subreddit": "test", "created_utc": created_utc,
 		"retrieved_utc": created_utc + 5, "permalink": f"/r/test/comments/t1/_/{comment_id}/",
-		"link_id": "t3_t1", "body": "RemindMe! 1 day",
+		"link_id": "t3_t1", "body": body,
 	}, client_name, "remindme", now_utc=created_utc + 10)
 	store.commit()
 
@@ -48,7 +49,7 @@ def test_read_streamer_audit_maps_client_names(streamer):
 	streamer_add(database, "c", "remindme", NOW - 2 * DAY)
 	rows = comparison.read_streamer_audit(path, NOW - DAY, NOW)
 	assert set(rows.keys()) == {("a", "remindme"), ("b", "updateme")}
-	assert rows[("a", "remindme")] == (NOW - HOUR, "/r/test/comments/t1/_/a/")
+	assert rows[("a", "remindme")] == (NOW - HOUR, "/r/test/comments/t1/_/a/", "RemindMe! 1 day")
 
 
 def test_sets_per_client(store, streamer):
@@ -167,3 +168,41 @@ def test_below_threshold_no_warning(store, streamer, monkeypatch):
 	monkeypatch.setattr(comparison.log, "warning", lambda message: warnings.append(message))
 	comparison.Comparison(store, path).run(NOW)
 	assert warnings == []
+
+
+def test_kind_labels_on_gauges_and_misses(store, streamer):
+	path, database = streamer
+	streamer_add(database, "prose1", "remindme", NOW - HOUR, body="they remind me of home")
+	streamer_add(database, "cmd1", "remindme", NOW - HOUR, body="RemindMe! 2 days")
+	store.set_int_key("comparison_start_utc", NOW - DAY)
+	misses_before = counters.misses.labels(client="remindme", side="streamer_only", kind="prose", term="remind me")._value.get()
+	comparison.Comparison(store, path).run(NOW)
+
+	prose_miss = store.get_miss("prose1", "remindme")
+	cmd_miss = store.get_miss("cmd1", "remindme")
+	assert prose_miss.kind == "prose"
+	assert prose_miss.term == "remind me"
+	assert cmd_miss.kind == "command"
+	assert cmd_miss.term == "remindme"
+
+	assert counters.comparison.labels(client="remindme", result="streamer_only", kind="command")._value.get() == 1
+	assert counters.comparison.labels(client="remindme", result="streamer_only", kind="prose")._value.get() == 1
+
+	misses_after = counters.misses.labels(client="remindme", side="streamer_only", kind="prose", term="remind me")._value.get()
+	assert misses_after - misses_before == 1
+
+
+def test_warning_ignores_prose_misses(store, streamer, monkeypatch):
+	path, database = streamer
+	for i in range(6):
+		streamer_add(database, f"p{i}", "remindme", NOW - HOUR, body="they remind me of home")
+	store.set_int_key("comparison_start_utc", NOW - DAY)
+	warnings = []
+	monkeypatch.setattr(comparison.log, "warning", lambda message: warnings.append(message))
+	comparison.Comparison(store, path).run(NOW)
+	assert warnings == []
+
+	for i in range(6):
+		streamer_add(database, f"c{i}", "remindme", NOW - HOUR, body="RemindMe! 2 days")
+	comparison.Comparison(store, path).run(NOW + 1)
+	assert len(warnings) == 1
