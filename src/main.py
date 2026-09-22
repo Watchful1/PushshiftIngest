@@ -12,9 +12,11 @@ import discord_logging
 # get_logger(init=True) reuses the logger conftest already initialised in tests
 log = discord_logging.get_logger(init=True)
 
+# counters must be imported before praw_wrapper: praw_wrapper imports prometheus_client,
+# and counters sets PROMETHEUS_DISABLE_CREATED_SERIES, which prometheus_client reads at import time.
+import counters
 import praw_wrapper
 
-import counters
 import matching
 import pushshift
 from comparison import Comparison, read_streamer_audit
