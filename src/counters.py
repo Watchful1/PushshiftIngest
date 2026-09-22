@@ -14,6 +14,7 @@ seen = prometheus_client.Counter('pushshift_seen_total', "Trigger comments first
 queued = prometheus_client.Counter('pushshift_queued_total', "Trigger comments written for the bots", ['client'])
 comparison = prometheus_client.Gauge('pushshift_comparison', "Comparison window counts", ['client', 'result', 'kind'])
 misses = prometheus_client.Counter('pushshift_misses_total', "Comparison misses flagged", ['client', 'side', 'kind', 'term'])
+misses_window = prometheus_client.Gauge('pushshift_misses_window', "Misses currently inside the comparison window", ['client', 'side', 'kind', 'term'])
 ingest_pending = prometheus_client.Gauge('pushshift_ingest_pending', "Rows waiting in ingest_comments", ['client'])
 catch_up_truncated = prometheus_client.Counter('pushshift_catch_up_truncated_total', "Catch up runs that hit the page cap before reaching the last success time")
 malformed_comments = prometheus_client.Counter('pushshift_malformed_comments_total', "Pushshift comments skipped because a required field was missing")

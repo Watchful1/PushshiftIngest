@@ -206,3 +206,19 @@ def test_warning_ignores_prose_misses(store, streamer, monkeypatch):
 		streamer_add(database, f"c{i}", "remindme", NOW - HOUR, body="RemindMe! 2 days")
 	comparison.Comparison(store, path).run(NOW + 1)
 	assert len(warnings) == 1
+
+
+def test_window_gauge_by_term_tracks_current_misses(store, streamer):
+	path, database = streamer
+	streamer_add(database, "cmd1", "updateme", NOW - HOUR, body="UpdateMe!")
+	streamer_add(database, "cmd2", "updateme", NOW - HOUR, body="SubscribeMe!")
+	store.set_int_key("comparison_start_utc", NOW - DAY)
+	comp = comparison.Comparison(store, path)
+	comp.run(NOW)
+	gauge = lambda term: counters.misses_window.labels(client="updateme", side="streamer_only", kind="command", term=term)._value.get()
+	assert gauge("updateme") == 1
+	assert gauge("subscribeme") == 1
+	poller_add(store, "cmd1", "updateme", NOW - HOUR, body="UpdateMe!")
+	comp.run(NOW + 60)
+	assert gauge("updateme") == 0
+	assert gauge("subscribeme") == 1

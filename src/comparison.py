@@ -36,6 +36,7 @@ class Comparison:
 		self.streamer_db_path = streamer_db_path
 		self.last_warning_utc = None
 		self.warned_unknown_clients = set()
+		self.window_combos = set()  # (client, side, kind, term) gauge labels set last cycle, to zero when they disappear
 
 	def run(self, now_utc):
 		"""Diff both sides inside the window. Returns {client: {both, streamer_only, pushshift_only}}."""
@@ -51,6 +52,7 @@ class Comparison:
 
 		result = {client: {"both": 0, "streamer_only": 0, "pushshift_only": 0} for client in CLIENT_NAMES}
 		kind_counts = {}
+		window_misses = {}
 		streamer_keys = set(streamer_side.keys())
 		pushshift_keys = set(pushshift_side.keys())
 		for key in streamer_keys & pushshift_keys:
@@ -64,12 +66,16 @@ class Comparison:
 			created_utc, permalink, body = streamer_side[key]
 			term, kind = matching.classify(key[1], body)
 			self._bump_kind(kind_counts, key[1], "streamer_only", kind)
+			combo = (key[1], "streamer_only", kind, term)
+			window_misses[combo] = window_misses.get(combo, 0) + 1
 			self._flag(key, "streamer_only", created_utc, permalink, term, kind, now_utc)
 		for key in pushshift_keys - streamer_keys:
 			self._counts_for(result, key[1])["pushshift_only"] += 1
 			created_utc, permalink, body = pushshift_side[key]
 			term, kind = matching.classify(key[1], body)
 			self._bump_kind(kind_counts, key[1], "pushshift_only", kind)
+			combo = (key[1], "pushshift_only", kind, term)
+			window_misses[combo] = window_misses.get(combo, 0) + 1
 			self._flag(key, "pushshift_only", created_utc, permalink, term, kind, now_utc)
 
 		for client in result:
@@ -78,6 +84,12 @@ class Comparison:
 				by_kind = by_side.get(side, {})
 				for kind in matching.KINDS:
 					counters.comparison.labels(client=client, result=side, kind=kind).set(by_kind.get(kind, 0))
+
+		for combo in self.window_combos - set(window_misses):
+			counters.misses_window.labels(*combo).set(0)
+		for combo, count in window_misses.items():
+			counters.misses_window.labels(*combo).set(count)
+		self.window_combos = set(window_misses)
 
 		self._maybe_warn(now_utc)
 		return result
