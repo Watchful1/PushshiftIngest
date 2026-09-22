@@ -194,3 +194,17 @@ def test_refresh_post_headers_have_no_authorization(token_file):
 	client.refresh_token()
 	assert "User-Agent" in session.headers
 	assert "Authorization" not in session.headers
+
+
+def test_refresh_failure_log_never_contains_the_token(token_file, monkeypatch):
+	import requests
+	warnings = []
+	monkeypatch.setattr(pushshift.log, "warning", lambda message: warnings.append(message))
+	# requests includes the full URL, query string and all, in ConnectionError messages
+	err = requests.exceptions.ConnectionError(
+		"HTTPSConnectionPool(host='auth.pushshift.io', port=443): Max retries exceeded with url: "
+		"/refresh?access_token=token-one (Caused by NewConnectionError)")
+	client, _ = make_client(token_file, [err])
+	assert client.refresh_token() == "error"
+	assert len(warnings) == 1
+	assert "token-one" not in warnings[0]

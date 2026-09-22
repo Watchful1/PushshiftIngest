@@ -102,7 +102,9 @@ class PushshiftClient:
 				REFRESH_URL, params={"access_token": self.token}, headers={'User-Agent': USER_AGENT}, timeout=self.timeout)
 			result = response.json()
 		except Exception as err:
-			log.warning(f"Pushshift token refresh failed: {type(err).__name__}: {err}")
+			# Only the exception type: the refresh URL carries the token in its query string, and
+			# requests puts the full URL into ConnectionError messages, so str(err) can leak it.
+			log.warning(f"Pushshift token refresh failed: {type(err).__name__}")
 			return "error"
 
 		if isinstance(result, dict) and 'access_token' in result:
