@@ -25,6 +25,7 @@ CATCH_UP_MARGIN_SECONDS = 15 * 60
 MAX_CATCH_UP_PAGES = 10
 PRUNE_INTERVAL_SECONDS = 3600
 FAILURE_WARN_THRESHOLD = 5
+SUMMARY_INTERVAL_SECONDS = 300
 ACTIVATION_MARGIN_SECONDS = 60
 
 REQUIRED_COMMENT_FIELDS = ("id", "subreddit", "created_utc", "link_id", "body")
@@ -38,6 +39,9 @@ class LoopState:
 		self.first_failure_utc = None
 		self.warned = False
 		self.last_prune_utc = None
+		self.last_summary_utc = None
+		self.summary_cycles = 0
+		self.summary_new = {}
 
 
 def normalise_comment(comment):
@@ -63,8 +67,11 @@ def normalise_comment(comment):
 	return cleaned
 
 
-def process_page(comments, store, active, now_utc, queue_after_utc=None):
-	"""Upsert every matching comment. Returns (new_row_count, oldest_created_utc)."""
+def process_page(comments, store, active, now_utc, queue_after_utc=None, tally=None):
+	"""Upsert every matching comment. Returns (new_row_count, oldest_created_utc).
+
+	If tally is a dict, new rows are counted into it per client for the periodic summary.
+	"""
 	new_count = 0
 	oldest = None
 	for raw_comment in comments:
@@ -83,6 +90,8 @@ def process_page(comments, store, active, now_utc, queue_after_utc=None):
 				continue
 			new_count += 1
 			counters.seen.labels(client=client).inc()
+			if tally is not None:
+				tally[client] = tally.get(client, 0) + 1
 			if active and (queue_after_utc is None or row.created_utc >= queue_after_utc):
 				store.queue(row)
 				counters.queued.labels(client=client).inc()
@@ -90,7 +99,7 @@ def process_page(comments, store, active, now_utc, queue_after_utc=None):
 	return new_count, oldest
 
 
-def catch_up(client, store, active, now_utc, last_success_utc, before, queue_after_utc=None):
+def catch_up(client, store, active, now_utc, last_success_utc, before, queue_after_utc=None, tally=None):
 	"""Page backward until we pass last_success_utc minus a margin, an empty page, or the page cap."""
 	target = last_success_utc - CATCH_UP_MARGIN_SECONDS
 	pages = 1  # the first page was already fetched by run_cycle
@@ -104,7 +113,7 @@ def catch_up(client, store, active, now_utc, last_success_utc, before, queue_aft
 		counters.request_results.labels(result="success").inc()
 		if not comments:
 			return
-		new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc)
+		new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc, tally)
 		store.commit()
 		log.info(f"Catch up page {pages}: {len(comments)} comments, {new_count} new, oldest {oldest}")
 		before = oldest
@@ -150,7 +159,8 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 		state.first_failure_utc = None
 		state.warned = False
 
-	new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc)
+	new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc, state.summary_new)
+	lag_seconds = None
 	if comments:
 		valid_created_utcs = []
 		for comment in comments:
@@ -159,18 +169,27 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 			except (KeyError, TypeError, ValueError):
 				continue
 		if valid_created_utcs:
-			counters.lag.set(max(now_utc - max(valid_created_utcs), 0))
+			lag_seconds = max(now_utc - max(valid_created_utcs), 0)
+			counters.lag.set(lag_seconds)
 	log.debug(f"Page: {len(comments)} comments, {new_count} new")
 
 	if now_utc - last_success_utc > CATCH_UP_AFTER_SECONDS and comments:
 		log.info(f"Last success was {now_utc - last_success_utc} seconds ago, catching up")
 		store.commit()  # release the write lock before the first catch up request
-		catch_up(client, store, active, now_utc, last_success_utc, oldest, queue_after_utc)
+		catch_up(client, store, active, now_utc, last_success_utc, oldest, queue_after_utc, state.summary_new)
 
 	store.set_int_key("last_success_utc", now_utc)
 
+	comparison_result = None
 	if comparison is not None:
-		comparison.run(now_utc)
+		comparison_result = comparison.run(now_utc)
+
+	state.summary_cycles += 1
+	if state.last_summary_utc is None or now_utc - state.last_summary_utc >= SUMMARY_INTERVAL_SECONDS:
+		log_summary(state, lag_seconds, comparison_result, active)
+		state.last_summary_utc = now_utc
+		state.summary_cycles = 0
+		state.summary_new = {}
 
 	if state.last_prune_utc is None or now_utc - state.last_prune_utc >= PRUNE_INTERVAL_SECONDS:
 		store.prune(now_utc)
@@ -180,6 +199,22 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 		counters.ingest_pending.labels(client=client_name).set(store.count_pending(client_name))
 
 	store.commit()
+
+
+def log_summary(state, lag_seconds, comparison_result, active):
+	"""One info line so the log shows progress in shadow mode, where nothing else is logged at info."""
+	per_client = ", ".join(f"{client}={state.summary_new.get(client, 0)}" for client in matching.CLIENT_NAMES)
+	parts = [
+		f"Summary: {state.summary_cycles} cycles, {sum(state.summary_new.values())} new matches ({per_client})",
+		f"mode {'active' if active else 'shadow'}",
+		f"pushshift lag {lag_seconds if lag_seconds is not None else 'n/a'}s",
+	]
+	if comparison_result is not None:
+		comparison_parts = []
+		for client, counts in comparison_result.items():
+			comparison_parts.append(f"{client} both={counts['both']} streamer_only={counts['streamer_only']} pushshift_only={counts['pushshift_only']}")
+		parts.append("comparison " + "; ".join(comparison_parts))
+	log.info(", ".join(parts))
 
 
 def signal_handler(signal, frame):

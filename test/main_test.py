@@ -235,3 +235,26 @@ def test_signal_handler_always_exits_zero(monkeypatch):
 	with pytest.raises(SystemExit) as excinfo:
 		main.signal_handler(None, None)
 	assert excinfo.value.code == 0
+
+
+def test_summary_logged_on_first_success_then_every_interval(store, tmp_path, monkeypatch):
+	infos = []
+	monkeypatch.setattr(main.log, "info", lambda message: infos.append(message))
+	client = make_client(tmp_path, [
+		FakeResponse(200, {"data": [comment("a", NOW - 60)]}),
+		FakeResponse(200, {"data": [comment("b", NOW - 30, body="updateme!")]}),
+		FakeResponse(200, {"data": []}),
+	])
+	state = main.LoopState()
+	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW)
+	summaries = [m for m in infos if m.startswith("Summary:")]
+	assert len(summaries) == 1
+	assert "1 cycles, 1 new matches (remindme=1, updateme=0)" in summaries[0]
+	assert "mode shadow" in summaries[0]
+	assert "pushshift lag 60s" in summaries[0]
+	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW + 60)
+	assert len([m for m in infos if m.startswith("Summary:")]) == 1
+	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW + main.SUMMARY_INTERVAL_SECONDS + 1)
+	summaries = [m for m in infos if m.startswith("Summary:")]
+	assert len(summaries) == 2
+	assert "2 cycles, 1 new matches (remindme=0, updateme=1)" in summaries[1]
