@@ -208,3 +208,13 @@ def test_refresh_failure_log_never_contains_the_token(token_file, monkeypatch):
 	assert client.refresh_token() == "error"
 	assert len(warnings) == 1
 	assert "token-one" not in warnings[0]
+
+
+def test_query_covers_bot_name_tokens():
+	"""Pushshift tokenises on word boundaries and case changes: `u/RemindMeBot` splits into
+	remind/me/bot and is found by the "remind me" phrase, but lowercase `u/remindmebot` is one
+	token that none of the trigger terms match, and `u/UpdateMeBot` never splits into `updateme`.
+	Both are valid triggers for the bots, so the bot names must be query terms themselves."""
+	terms = pushshift.QUERY.split("|")
+	assert "remindmebot" in terms
+	assert "updatemebot" in terms

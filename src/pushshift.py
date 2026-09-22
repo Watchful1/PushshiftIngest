@@ -10,7 +10,11 @@ SEARCH_URL = "https://api.pushshift.io/reddit/comment/search"
 REFRESH_URL = "https://auth.pushshift.io/refresh"
 # OR syntax as used by the old RemindMeBot TRIGGER_COMBINED constant. Verified against
 # https://api.pushshift.io/guide during implementation; adjust here if the syntax differs.
-QUERY = 'remindme|"remind me"|remindmerepeat|cakeday|updateme|subscribeme|subscribeall'
+# Pushshift matches whole tokens and splits tokens on case changes: `u/RemindMeBot` becomes
+# remind/me/bot and is found by the "remind me" phrase, but lowercase `u/remindmebot` is a
+# single token no trigger term matches, and `u/UpdateMeBot` never yields `updateme`. Both are
+# valid triggers for the bots (verified live 2026-09-22), so the bot names are terms too.
+QUERY = 'remindme|"remind me"|remindmerepeat|cakeday|updateme|subscribeme|subscribeall|remindmebot|updatemebot'
 USER_AGENT = "PushshiftIngest by u/Watchful1"
 PAGE_SIZE = 250
 MAX_BACKOFF_SECONDS = 300
