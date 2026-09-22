@@ -18,6 +18,7 @@ import counters
 import matching
 import pushshift
 from comparison import Comparison, read_streamer_audit
+from metrics_push import MetricsPusher, PUSH_INTERVAL_SECONDS
 from store import Store
 
 CATCH_UP_AFTER_SECONDS = 1800  # one page covers roughly an hour of matches, so catch up well inside that
@@ -42,6 +43,7 @@ class LoopState:
 		self.last_summary_utc = None
 		self.summary_cycles = 0
 		self.summary_new = {}
+		self.last_push_utc = None
 
 
 def normalise_comment(comment):
@@ -217,6 +219,16 @@ def log_summary(state, lag_seconds, comparison_result, active):
 	log.info(", ".join(parts))
 
 
+def maybe_push_metrics(pusher, state, now_utc):
+	"""Push once per PUSH_INTERVAL_SECONDS. Runs after every cycle, including failed ones, so failure metrics still arrive."""
+	if pusher is None:
+		return None
+	if state.last_push_utc is not None and now_utc - state.last_push_utc < PUSH_INTERVAL_SECONDS:
+		return None
+	state.last_push_utc = now_utc
+	return pusher.push()
+
+
 def signal_handler(signal, frame):
 	log.info("Handling interrupt")
 	try:
@@ -245,6 +257,8 @@ if __name__ == "__main__":
 	parser.add_argument("--port", help="Prometheus port", type=int, default=8006)
 	parser.add_argument("--debug", help="Set the log level to debug", action='store_const', const=True, default=False)
 	parser.add_argument("--once", help="Run one cycle and exit", action='store_const', const=True, default=False)
+	parser.add_argument("--metrics_push_url", help="Full URL of the metrics proxy to POST this process's metrics to once a minute. Unset disables pushing", default=None)
+	parser.add_argument("--metrics_push_key_file", help="Path to the metrics push proxy's bearer key file", default="metrics_push_key.txt")
 	args = parser.parse_args()
 
 	if args.debug:
@@ -255,6 +269,15 @@ if __name__ == "__main__":
 	if token_store.load() is None:
 		log.error(f"No pushshift token in {args.token_file}")
 		sys.exit(1)
+
+	if args.metrics_push_url is not None:
+		metrics_push_key = pushshift.TokenStore(args.metrics_push_key_file).load()
+		if metrics_push_key is None:
+			log.error(f"No metrics push key in {args.metrics_push_key_file}")
+			sys.exit(1)
+		pusher = MetricsPusher(args.metrics_push_url, metrics_push_key)
+	else:
+		pusher = None
 
 	if args.streamer_db is not None:
 		if not os.path.exists(args.streamer_db):
@@ -285,7 +308,7 @@ if __name__ == "__main__":
 	client = pushshift.PushshiftClient(token_store)
 	state = LoopState()
 
-	log.info(f"Starting in {'active' if args.active else 'shadow'} mode, db {args.db}, comparison {'on' if comparison else 'off'}")
+	log.info(f"Starting in {'active' if args.active else 'shadow'} mode, db {args.db}, comparison {'on' if comparison else 'off'}, metrics push {'on' if pusher else 'off'}")
 
 	while True:
 		start_time = time.perf_counter()
@@ -298,6 +321,7 @@ if __name__ == "__main__":
 				store.session.rollback()
 			except Exception:
 				pass
+		maybe_push_metrics(pusher, state, int(time.time()))
 		discord_logging.flush_discord()
 
 		if args.once:

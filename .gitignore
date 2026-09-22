@@ -1,4 +1,5 @@
 pushshift_token.txt
+metrics_push_key.txt
 *.db
 *.db-journal
 logs/

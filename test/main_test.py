@@ -258,3 +258,28 @@ def test_summary_logged_on_first_success_then_every_interval(store, tmp_path, mo
 	summaries = [m for m in infos if m.startswith("Summary:")]
 	assert len(summaries) == 2
 	assert "2 cycles, 1 new matches (remindme=0, updateme=1)" in summaries[1]
+
+
+class FakePusher:
+	def __init__(self):
+		self.calls = []
+
+	def push(self):
+		self.calls.append(True)
+		return "pushed"
+
+
+def test_maybe_push_metrics_none_pusher_is_noop():
+	state = main.LoopState()
+	assert main.maybe_push_metrics(None, state, NOW) is None
+	assert state.last_push_utc is None
+
+
+def test_maybe_push_metrics_runs_once_per_interval():
+	pusher = FakePusher()
+	state = main.LoopState()
+	main.maybe_push_metrics(pusher, state, NOW)
+	main.maybe_push_metrics(pusher, state, NOW + 30)
+	main.maybe_push_metrics(pusher, state, NOW + 60)
+	assert len(pusher.calls) == 2
+	assert state.last_push_utc == NOW + 60

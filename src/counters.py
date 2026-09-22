@@ -1,3 +1,9 @@
+import os
+
+# Drop the *_created companion series prometheus_client emits for every counter;
+# they add nothing on the dashboard and double the pushed series count.
+os.environ.setdefault("PROMETHEUS_DISABLE_CREATED_SERIES", "True")
+
 import prometheus_client
 
 lag = prometheus_client.Gauge('pushshift_lag_seconds', "Seconds between now and the newest comment on the last successful page")
@@ -11,6 +17,7 @@ misses = prometheus_client.Counter('pushshift_misses_total', "Comparison misses 
 ingest_pending = prometheus_client.Gauge('pushshift_ingest_pending', "Rows waiting in ingest_comments", ['client'])
 catch_up_truncated = prometheus_client.Counter('pushshift_catch_up_truncated_total', "Catch up runs that hit the page cap before reaching the last success time")
 malformed_comments = prometheus_client.Counter('pushshift_malformed_comments_total', "Pushshift comments skipped because a required field was missing")
+metrics_push = prometheus_client.Counter('pushshift_metrics_push_total', "Metric pushes to the remote store by outcome", ['result'])
 
 
 def init(port):

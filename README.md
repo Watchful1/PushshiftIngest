@@ -27,7 +27,26 @@ Active mode: also writes `ingest_comments` rows for the bots.
 
 Flags: `--db` (default `database.db`), `--streamer_db`, `--token_file`
 (default `pushshift_token.txt`), `--interval` (default 30), `--port`
-(default 8006), `--debug`, `--once`.
+(default 8006), `--debug`, `--once`, `--metrics_push_url`,
+`--metrics_push_key_file` (default `metrics_push_key.txt`).
+
+## Pushing metrics to the new server
+
+The new Grafana's VictoriaMetrics never scrapes anything, so the poller
+pushes its own metrics once a minute through the db-service proxy on that
+server instead of waiting to be scraped. Put the remindme API key from the
+new server's `.env` into `metrics_push_key.txt` (raw key on one line,
+gitignored) and run with:
+
+    pipenv run python src/main.py Watchful1 --streamer_db ../CommentStreamer/database.db --metrics_push_url https://reddit.watchful.gr/api/v1/remindme/metrics/pushshift_ingest/subreddit/legacy
+
+The last two path segments of the URL become labels on every pushed series:
+`pushshift_ingest` is the `job` label and `legacy` the `subreddit` label. The
+local port 8006 keeps serving Prometheus's usual pull-based scrape as well;
+this is in addition to that, not instead of it. A dead poller does not push
+a zero or an error series, it just stops pushing, so the series itself goes
+missing. Alert on that with `absent_over_time(pushshift_lag_seconds[10m])`
+rather than a threshold on the value.
 
 ## The audit trigger in the streamer database
 

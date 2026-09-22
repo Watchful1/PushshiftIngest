@@ -31,7 +31,8 @@ class FakeSession:
 	def get(self, url, params=None, headers=None, timeout=None):
 		return self._next("get", url, params)
 
-	def post(self, url, params=None, headers=None, timeout=None):
+	def post(self, url, params=None, headers=None, timeout=None, data=None):
+		self.last_post = {"url": url, "headers": headers, "data": data}
 		return self._next("post", url, params)
 
 
