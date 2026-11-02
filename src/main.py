@@ -25,7 +25,7 @@ from store import Store
 
 CATCH_UP_AFTER_SECONDS = 1800  # one page covers roughly an hour of matches, so catch up well inside that
 CATCH_UP_MARGIN_SECONDS = 15 * 60
-MAX_CATCH_UP_PAGES = 10
+MAX_CATCH_UP_PAGES = 100  # per cycle, about three days of matches
 PRUNE_INTERVAL_SECONDS = 3600
 FAILURE_WARN_THRESHOLD = 5
 SUMMARY_INTERVAL_SECONDS = 300
@@ -104,28 +104,40 @@ def process_page(comments, store, active, now_utc, queue_after_utc=None, tally=N
 	return new_count, oldest
 
 
-def catch_up(client, store, active, now_utc, last_success_utc, before, queue_after_utc=None, tally=None):
-	"""Page backward until we pass last_success_utc minus a margin, an empty page, or the page cap."""
-	target = last_success_utc - CATCH_UP_MARGIN_SECONDS
-	pages = 1  # the first page was already fetched by run_cycle
-	while pages < MAX_CATCH_UP_PAGES and before is not None and before > target:
+def catch_up(client, store, active, now_utc, before, target, queue_after_utc=None, tally=None):
+	"""Page backward from before until a page reaches target or comes back empty.
+
+	The uncovered range is saved in the keystore after every page. A failed request or the
+	page cap leaves it there, and the next successful cycle resumes from it.
+	"""
+	store.set_int_key("catch_up_before_utc", before)
+	store.set_int_key("catch_up_target_utc", target)
+	store.commit()
+	pages = 0
+	while before is not None and before > target:
+		if pages >= MAX_CATCH_UP_PAGES:
+			counters.catch_up_truncated.inc()
+			log.warning(f"Catch up hit the {MAX_CATCH_UP_PAGES} page cap with {before - target} seconds still uncovered, resuming next cycle")
+			return
 		comments, reason = client.search(before=before)
 		pages += 1
 		if comments is None:
 			counters.request_results.labels(result=reason).inc()
-			log.info(f"Catch up page failed: {reason}")
+			log.info(f"Catch up page failed: {reason}, resuming next cycle")
 			return
 		counters.request_results.labels(result="success").inc()
 		if not comments:
-			return
+			break
 		new_count, oldest = process_page(comments, store, active, now_utc, queue_after_utc, tally)
+		before = oldest
+		if before is not None:
+			store.set_int_key("catch_up_before_utc", before)
 		store.commit()
 		log.info(f"Catch up page {pages}: {len(comments)} comments, {new_count} new, oldest {oldest}")
-		before = oldest
 
-	if pages >= MAX_CATCH_UP_PAGES and before is not None and before > target:
-		counters.catch_up_truncated.inc()
-		log.warning(f"Catch up hit the {MAX_CATCH_UP_PAGES} page cap with {before - target} seconds still uncovered")
+	store.delete_key("catch_up_before_utc")
+	store.delete_key("catch_up_target_utc")
+	store.commit()
 
 
 def run_cycle(client, store, comparison, active, state, now_utc):
@@ -178,10 +190,18 @@ def run_cycle(client, store, comparison, active, state, now_utc):
 			counters.lag.set(lag_seconds)
 	log.debug(f"Page: {len(comments)} comments, {new_count} new")
 
+	pending_before = store.get_int_key("catch_up_before_utc")
+	pending_target = store.get_int_key("catch_up_target_utc")
 	if now_utc - last_success_utc > CATCH_UP_AFTER_SECONDS and comments:
 		log.info(f"Last success was {now_utc - last_success_utc} seconds ago, catching up")
-		store.commit()  # release the write lock before the first catch up request
-		catch_up(client, store, active, now_utc, last_success_utc, oldest, queue_after_utc, state.summary_new)
+		target = last_success_utc - CATCH_UP_MARGIN_SECONDS
+		if pending_target is not None:
+			# Extend down to the older unfinished range. The part between them is fetched again, and upsert skips it.
+			target = min(target, pending_target)
+		catch_up(client, store, active, now_utc, oldest if oldest is not None else now_utc, target, queue_after_utc, state.summary_new)
+	elif pending_before is not None and pending_target is not None:
+		log.info(f"Resuming catch up with {pending_before - pending_target} seconds still uncovered")
+		catch_up(client, store, active, now_utc, pending_before, pending_target, queue_after_utc, state.summary_new)
 
 	store.set_int_key("last_success_utc", now_utc)
 

@@ -147,6 +147,8 @@ def test_catch_up_pages_until_last_success(store, tmp_path, monkeypatch):
 	assert client.session.calls[1][2]["until"] == NOW - HOUR
 	assert warnings == []
 	assert commit_count >= 2
+	assert store.get_int_key("catch_up_before_utc") is None
+	assert store.get_int_key("catch_up_target_utc") is None
 
 
 def test_catch_up_stops_on_empty_page(store, tmp_path):
@@ -161,16 +163,60 @@ def test_catch_up_stops_on_empty_page(store, tmp_path):
 
 
 def test_catch_up_stops_at_page_cap(store, tmp_path, monkeypatch):
-	pages = [FakeResponse(200, {"data": [comment(f"c{i}", NOW - 10 * (i + 1))]}) for i in range(20)]
+	pages = [FakeResponse(200, {"data": [comment(f"c{i}", NOW - 10 * (i + 1))]}) for i in range(main.MAX_CATCH_UP_PAGES + 10)]
 	client = make_client(tmp_path, pages)
 	store.set_int_key("last_success_utc", NOW - 2 * HOUR)
 	store.commit()
 	warnings = []
 	monkeypatch.setattr(main.log, "warning", lambda message: warnings.append(message))
 	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
-	assert len(client.session.calls) == main.MAX_CATCH_UP_PAGES
+	assert len(client.session.calls) == 1 + main.MAX_CATCH_UP_PAGES
 	assert len(warnings) == 1
 	assert "page cap" in warnings[0]
+	assert store.get_int_key("catch_up_before_utc") == NOW - 10 * (main.MAX_CATCH_UP_PAGES + 1)
+	assert store.get_int_key("catch_up_target_utc") == NOW - 2 * HOUR - main.CATCH_UP_MARGIN_SECONDS
+
+
+def test_catch_up_failure_resumes_next_cycle(store, tmp_path):
+	last_success = NOW - 2 * HOUR
+	target = last_success - main.CATCH_UP_MARGIN_SECONDS
+	client = make_client(tmp_path, [
+		FakeResponse(200, {"data": [comment("p1", NOW - 60)]}),
+		FakeResponse(200, {"data": [comment("p2", NOW - HOUR)]}),
+		FakeResponse(500),
+		FakeResponse(200, {"data": [comment("p3", NOW + 10)]}),
+		FakeResponse(200, {"data": [comment("p4", last_success - 20 * 60)]}),
+	])
+	store.set_int_key("last_success_utc", last_success)
+	store.commit()
+	state = main.LoopState()
+	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW)
+	assert store.get_int_key("catch_up_before_utc") == NOW - HOUR
+	assert store.get_int_key("catch_up_target_utc") == target
+	assert store.get_int_key("last_success_utc") == NOW
+
+	main.run_cycle(client, store, comparison=None, active=False, state=state, now_utc=NOW + 30)
+	assert client.session.calls[4][2]["until"] == NOW - HOUR
+	assert store.count_seen() == 4
+	assert store.get_int_key("catch_up_before_utc") is None
+	assert store.get_int_key("catch_up_target_utc") is None
+
+
+def test_new_gap_extends_unfinished_catch_up(store, tmp_path):
+	old_target = NOW - 5 * HOUR
+	store.set_int_key("catch_up_before_utc", NOW - 4 * HOUR)
+	store.set_int_key("catch_up_target_utc", old_target)
+	store.set_int_key("last_success_utc", NOW - 2 * HOUR)
+	store.commit()
+	client = make_client(tmp_path, [
+		FakeResponse(200, {"data": [comment("p1", NOW - 60)]}),
+		FakeResponse(200, {"data": [comment("p2", NOW - 3 * HOUR)]}),
+		FakeResponse(200, {"data": [comment("p3", old_target - 60)]}),
+	])
+	main.run_cycle(client, store, comparison=None, active=False, state=main.LoopState(), now_utc=NOW)
+	assert len(client.session.calls) == 3
+	assert client.session.calls[1][2]["until"] == NOW - 60
+	assert store.get_int_key("catch_up_target_utc") is None
 
 
 def test_no_catch_up_inside_threshold(store, tmp_path):

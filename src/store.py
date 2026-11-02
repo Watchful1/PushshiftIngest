@@ -4,7 +4,7 @@ from sqlalchemy.orm import declarative_base
 from praw_wrapper import IngestComment
 # Reaches into praw_wrapper's internal module because the public API has no lookup-only
 # client getter; re-check this import on a PrawWrapper upgrade.
-from praw_wrapper.ingest import Client
+from praw_wrapper.ingest import Client, KeyValue
 
 log = discord_logging.get_logger()
 
@@ -164,3 +164,6 @@ class Store:
 
 	def set_int_key(self, key, value):
 		self.db.save_keystore(key, str(int(value)))
+
+	def delete_key(self, key):
+		self.session.query(KeyValue).filter_by(key=key).delete()

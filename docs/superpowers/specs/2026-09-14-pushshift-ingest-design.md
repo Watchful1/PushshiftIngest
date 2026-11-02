@@ -135,9 +135,15 @@ Every cycle, default 30 seconds:
 succeeds and `now - last_success_utc` exceeds 30 minutes, the poller pages
 backward: it repeats the request with `before=<oldest created_utc on the
 previous page>` until the oldest comment on a page is older than
-`last_success_utc - 15 min`, a page comes back empty, or 10 pages have been
-fetched. Every page goes through the same upsert. Then it returns to single
-page mode. On a fresh database `last_success_utc` is set to the start time,
+`last_success_utc - 15 min` or a page comes back empty. Every page goes
+through the same upsert. Then it returns to single page mode.
+
+The range still to cover is saved as `catch_up_before_utc` and
+`catch_up_target_utc` after every page. If a catch up request fails, or one
+cycle has fetched 100 pages, the poller stops there and the next successful
+cycle resumes from the saved range. If a new outage happens while a range is
+still saved, the new catch up runs down to the older saved target, fetching
+the part in between again, which the upsert skips. On a fresh database `last_success_utc` is set to the start time,
 so the first run does not backfill.
 
 ### Failure handling
@@ -320,7 +326,9 @@ temporary file so the real trigger SQL runs.
   path, non-200 path, 403 then refresh then success, refresh returning
   still-active, refresh returning an error. Backoff sequence and reset.
 - Catch up: with `last_success_utc` two hours old, paging continues until the
-  age condition, stops on an empty page, and stops at the 10 page cap.
+  age condition, stops on an empty page, and stops at the 100 page cap.
+  A failed catch up page or the cap leaves the range saved, and the next
+  cycle resumes from it.
 - `install_audit_trigger`: install on a fresh file, insert into
   `ingest_comments`, assert the audit row. Install twice is a no-op.
   Uninstall removes both.
